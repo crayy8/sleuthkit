@@ -2,44 +2,47 @@
  ** The Sleuth Kit 
  **
  ** Brian Carrier [carrier <at> sleuthkit [dot] org]
- ** Copyright (c) 2011-2012 Brian Carrier.  All Rights reserved
+ ** Copyright (c) 2020 Brian Carrier.  All Rights reserved
  **
  ** This software is distributed under the Common Public License 1.0
  **
  */
 
 /**
- * \file tsk_case_db.h
+ * \file auto_db_java.h
  * Contains the class that creates a case-level database of file system
- * data. 
+ * data from the JNI code.
  */
 
-#ifndef _TSK_AUTO_CASE_H
-#define _TSK_AUTO_CASE_H
+#ifndef _AUTO_DB_JAVA_H
+#define _AUTO_DB_JAVA_H
+
+#include <map>
+using std::map;
 
 #include <string>
 using std::string;
 
-#include "tsk_auto_i.h"
-#include "tsk_db_sqlite.h"
-#include "tsk/hashdb/tsk_hashdb.h"
+#include "tsk/auto/tsk_auto_i.h"
+#include "tsk/auto/tsk_db.h"
+#include "jni.h"
 
-#define TSK_ADD_IMAGE_SAVEPOINT "ADDIMAGE"
 
 /** \internal
  * C++ class that implements TskAuto to load file metadata into a database. 
  * This is used by the TskCaseDb class. 
  */
-class TskAutoDb:public TskAuto {
+class TskAutoDbJava :public TskAuto {
   public:
-    TskAutoDb(TskDb * a_db, TSK_HDB_INFO * a_NSRLDb, TSK_HDB_INFO * a_knownBadDb);
-    virtual ~ TskAutoDb();
+    TskAutoDbJava();
+    virtual ~TskAutoDbJava();
     virtual uint8_t openImage(int, const TSK_TCHAR * const images[],
         TSK_IMG_TYPE_ENUM, unsigned int a_ssize, const char* deviceId = NULL);
     virtual uint8_t openImage(const char* a_deviceId = NULL);
     virtual uint8_t openImageUtf8(int, const char *const images[],
         TSK_IMG_TYPE_ENUM, unsigned int a_ssize, const char* deviceId = NULL);
     virtual void closeImage();
+    void close();
     virtual void setTz(string tzone);
 
     virtual TSK_FILTER_ENUM filterVs(const TSK_VS_INFO * vs_info);
@@ -49,22 +52,7 @@ class TskAutoDb:public TskAuto {
     virtual TSK_FILTER_ENUM filterFs(TSK_FS_INFO * fs_info);
     virtual TSK_RETVAL_ENUM processFile(TSK_FS_FILE * fs_file,
         const char *path);
-    virtual void createBlockMap(bool flag);
     const std::string getCurDir();
-    
-    /**
-    * Check if we can talk to the database.
-    * Returns true if the database is reachable with current credentials, false otherwise.
-    */
-    bool isDbOpen();
-
-    /**
-     * Calculate hash values of files and add them to database.
-     * Default is false.  Will be set to true if a Hash DB is configured.
-     *
-     * @param flag True to calculate hash values and look them up.
-     */
-    virtual void hashFiles(bool flag);
 
     /**
      * Sets whether or not the file systems for an image should be added when 
@@ -119,11 +107,12 @@ class TskAutoDb:public TskAuto {
         TSK_IMG_TYPE_ENUM imgType, unsigned int sSize, const char* deviceId = NULL);
 #endif
     void stopAddImage();
-    int revertAddImage();
-    int64_t commitAddImage();
+
+    int64_t getImageID();
+
+    TSK_RETVAL_ENUM initializeJni(JNIEnv *, jobject);
 
   private:
-    TskDb * m_db;
     int64_t m_curImgId;     ///< Object ID of image currently being processed
     int64_t m_curVsId;      ///< Object ID of volume system currently being processed
     int64_t m_curVolId;     ///< Object ID of volume currently being processed
@@ -136,15 +125,10 @@ class TskAutoDb:public TskAuto {
     string m_curDirPath;		//< Path of the current directory being processed
     tsk_lock_t m_curDirPathLock; //< protects concurrent access to m_curDirPath
     string m_curImgTZone;
-    bool m_blkMapFlag;
-    bool m_fileHashFlag;
     bool m_vsFound;
     bool m_volFound;
     bool m_poolFound;
     bool m_stopped;
-    bool m_imgTransactionOpen;
-    TSK_HDB_INFO * m_NSRLDb;
-    TSK_HDB_INFO * m_knownBadDb;
     bool m_addFileSystems;
     bool m_noFatFsOrphans;
     bool m_addUnallocSpace;
@@ -159,15 +143,41 @@ class TskAutoDb:public TskAuto {
     std::map<int64_t, int64_t> m_poolOffsetToParentId;
     std::map<int64_t, int64_t> m_poolOffsetToVsId;
 
+    // JNI data
+    JNIEnv * m_jniEnv = NULL;
+    jclass m_callbackClass = NULL;
+    jobject m_javaDbObj = NULL;
+    jmethodID m_addImageMethodID = NULL;
+    jmethodID m_addImageNameMethodID = NULL;
+    jmethodID m_addVolumeSystemMethodID = NULL;
+    jmethodID m_addVolumeMethodID = NULL;
+    jmethodID m_addPoolMethodID = NULL;
+    jmethodID m_addFileSystemMethodID = NULL;
+    jmethodID m_addFileMethodID = NULL;
+    jmethodID m_addUnallocParentMethodID = NULL;
+    jmethodID m_addLayoutFileMethodID = NULL;
+    jmethodID m_addLayoutFileRangeMethodID = NULL;
+
+    // Cached objects
+    vector<TSK_DB_FS_INFO> m_savedFsInfo;
+    vector<TSK_DB_VS_INFO> m_savedVsInfo;
+    vector<TSK_DB_VS_PART_INFO> m_savedVsPartInfo;
+    vector<TSK_DB_OBJECT> m_savedObjects;
+
+    void saveObjectInfo(uint64_t objId, uint64_t parObjId, TSK_DB_OBJECT_TYPE_ENUM type);
+    TSK_RETVAL_ENUM getObjectInfo(uint64_t objId, TSK_DB_OBJECT** obj_info);
+
+    TSK_RETVAL_ENUM createJString(const char * inputString, jstring & newJString);
+
     // prevent copying until we add proper logic to handle it
-    TskAutoDb(const TskAutoDb&);
-    TskAutoDb & operator=(const TskAutoDb&);
+    TskAutoDbJava(const TskAutoDbJava&);
+    TskAutoDbJava & operator=(const TskAutoDbJava&);
 
     //internal structure to keep track of temp. unalloc block range
     typedef struct _UNALLOC_BLOCK_WLK_TRACK {
-        _UNALLOC_BLOCK_WLK_TRACK(const TskAutoDb & tskAutoDb, const TSK_FS_INFO & fsInfo, const int64_t fsObjId, int64_t minChunkSize, int64_t maxChunkSize)
-            : tskAutoDb(tskAutoDb),fsInfo(fsInfo),fsObjId(fsObjId),curRangeStart(0), minChunkSize(minChunkSize), maxChunkSize(maxChunkSize), prevBlock(0), isStart(true), nextSequenceNo(0) {}
-        const TskAutoDb & tskAutoDb;
+        _UNALLOC_BLOCK_WLK_TRACK(TskAutoDbJava & tskAutoDbJava, const TSK_FS_INFO & fsInfo, const int64_t fsObjId, int64_t minChunkSize, int64_t maxChunkSize)
+            : tskAutoDbJava(tskAutoDbJava),fsInfo(fsInfo),fsObjId(fsObjId),curRangeStart(0), minChunkSize(minChunkSize), maxChunkSize(maxChunkSize), prevBlock(0), isStart(true), nextSequenceNo(0) {}
+        TskAutoDbJava & tskAutoDbJava;
         const TSK_FS_INFO & fsInfo;
         const int64_t fsObjId;
         vector<TSK_DB_FILE_LAYOUT_RANGE> ranges;																																										
@@ -182,15 +192,10 @@ class TskAutoDb:public TskAuto {
 
     uint8_t addImageDetails(const char *);
     TSK_RETVAL_ENUM insertFileData(TSK_FS_FILE * fs_file,
-        const TSK_FS_ATTR *, const char *path,
-        const unsigned char *const md5,
-        const TSK_DB_FILES_KNOWN_ENUM known);
+        const TSK_FS_ATTR *, const char *path);
     virtual TSK_RETVAL_ENUM processAttribute(TSK_FS_FILE *,
         const TSK_FS_ATTR * fs_attr, const char *path);
-    static TSK_WALK_RET_ENUM md5HashCallback(TSK_FS_FILE * file,
-        TSK_OFF_T offset, TSK_DADDR_T addr, char *buf, size_t size,
-        TSK_FS_BLOCK_FLAG_ENUM a_flags, void *ptr);
-    int md5HashAttr(unsigned char md5Hash[16], const TSK_FS_ATTR * fs_attr);
+
     TSK_RETVAL_ENUM addUnallocatedPoolBlocksToDb(size_t & numPool);
     static TSK_WALK_RET_ENUM fsWalkUnallocBlocksCb(const TSK_FS_BLOCK *a_block, void *a_ptr);
     TSK_RETVAL_ENUM addFsInfoUnalloc(const TSK_DB_FS_INFO & dbFsInfo);
@@ -199,39 +204,35 @@ class TskAutoDb:public TskAuto {
     TSK_RETVAL_ENUM addUnallocImageSpaceToDb();
     TSK_RETVAL_ENUM addUnallocSpaceToDb();
 
-};
+    // JNI methods
+    TSK_RETVAL_ENUM addImageInfo(int type, TSK_OFF_T ssize, int64_t & objId, const string & timezone, TSK_OFF_T size, const string &md5,
+        const string& sha1, const string& sha256, const string& deviceId, const string& collectionDetails);
+    TSK_RETVAL_ENUM addImageName(int64_t objId, char const* imgName, int sequence);
+    TSK_RETVAL_ENUM addVsInfo(const TSK_VS_INFO* vs_info, int64_t parObjId, int64_t& objId);
+    TSK_RETVAL_ENUM addPoolInfoAndVS(const TSK_POOL_INFO *pool_info, int64_t parObjId, int64_t& objId);
+    TSK_RETVAL_ENUM addPoolVolumeInfo(const TSK_POOL_VOLUME_INFO* pool_vol, int64_t parObjId, int64_t& objId);
+    TSK_RETVAL_ENUM addVolumeInfo(const TSK_VS_PART_INFO* vs_part, int64_t parObjId, int64_t& objId);
+    TSK_RETVAL_ENUM addFsInfo(const TSK_FS_INFO* fs_info, int64_t parObjId, int64_t& objId);
+    TSK_RETVAL_ENUM addFsFile(TSK_FS_FILE* fs_file,
+        const TSK_FS_ATTR* fs_attr, const char* path,
+        int64_t fsObjId, int64_t& objId, int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addFile(TSK_FS_FILE* fs_file,
+        const TSK_FS_ATTR* fs_attr, const char* path,
+        int64_t fsObjId, int64_t parObjId,
+        int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addFileWithLayoutRange(const TSK_DB_FILES_TYPE_ENUM dbFileType, const int64_t parentObjId,
+        const int64_t fsObjId, const uint64_t size,
+        vector<TSK_DB_FILE_LAYOUT_RANGE>& ranges, int64_t& objId,
+        int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addUnallocBlockFile(const int64_t parentObjId, const int64_t fsObjId, const uint64_t size,
+        vector<TSK_DB_FILE_LAYOUT_RANGE>& ranges, int64_t& objId,
+        int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addUnusedBlockFile(const int64_t parentObjId, const int64_t fsObjId, const uint64_t size,
+        vector<TSK_DB_FILE_LAYOUT_RANGE>& ranges, int64_t& objId,
+        int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addUnallocFsBlockFilesParent(const int64_t fsObjId, int64_t& objId, int64_t dataSourceObjId);
+    TSK_RETVAL_ENUM addUnallocatedPoolVolume(int vol_index, int64_t parObjId, int64_t& objId);
 
-
-#define TSK_CASE_DB_TAG 0xB0551A33
-
-/**
- * Stores case-level information in a database on one or more disk images.
- */
-class TskCaseDb {
-  public:
-    unsigned int m_tag;
-
-    ~TskCaseDb();
-
-    static TskCaseDb *newDb(const TSK_TCHAR * path);
-    static TskCaseDb *openDb(const TSK_TCHAR * path);
-
-    void clearLookupDatabases();
-    uint8_t setNSRLHashDb(TSK_TCHAR * const indexFile);
-    uint8_t setKnownBadHashDb(TSK_TCHAR * const indexFile);
-
-    uint8_t addImage(int numImg, const TSK_TCHAR * const imagePaths[],
-        TSK_IMG_TYPE_ENUM imgType, unsigned int sSize);
-    TskAutoDb *initAddImage();
-
-  private:
-    // prevent copying until we add proper logic to handle it
-    TskCaseDb(const TskCaseDb&);
-    TskCaseDb & operator=(const TskCaseDb&);
-    TskCaseDb(TskDb * a_db);
-    TskDb *m_db;
-    TSK_HDB_INFO * m_NSRLDb;
-    TSK_HDB_INFO * m_knownBadDb;
 };
 
 #endif
