@@ -66,26 +66,26 @@ TskAutoDbJava::~TskAutoDbJava()
 /**
 * Look up all callback method IDs
 * @param jniEnv pointer to java environment this was called from
-* @param jobj the JniDbHelper object this was called from
+* @param jobj the TskCaseDbBridge object this was called from
 */
 TSK_RETVAL_ENUM
 TskAutoDbJava::initializeJni(JNIEnv * jniEnv, jobject jobj) {
     m_jniEnv = jniEnv;
     m_javaDbObj = m_jniEnv->NewGlobalRef(jobj);
 
-    jclass localCallbackClass = m_jniEnv->FindClass("org/sleuthkit/datamodel/JniDbHelper");
+    jclass localCallbackClass = m_jniEnv->FindClass("org/sleuthkit/datamodel/TskCaseDbBridge");
     if (localCallbackClass == NULL) {
         return TSK_ERR;
     }
     m_callbackClass = (jclass)m_jniEnv->NewGlobalRef(localCallbackClass);
 
-    m_addImageMethodID = m_jniEnv->GetMethodID(m_callbackClass, "addImageInfo", "(IJLjava/lang/String;JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J");
+    m_addImageMethodID = m_jniEnv->GetMethodID(m_callbackClass, "addImageInfo", "(IJLjava/lang/String;JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)J");
     if (m_addImageMethodID == NULL) {
         return TSK_ERR;
     }
 
-    m_addImageNameMethodID = m_jniEnv->GetMethodID(m_callbackClass, "addImageName", "(JLjava/lang/String;J)I");
-    if (m_addImageNameMethodID == NULL) {
+    m_addAcquisitionDetailsMethodID = m_jniEnv->GetMethodID(m_callbackClass, "addAcquisitionDetails", "(JLjava/lang/String;)V");
+    if (m_addAcquisitionDetailsMethodID == NULL) {
         return TSK_ERR;
     }
 
@@ -184,7 +184,8 @@ TskAutoDbJava::getObjectInfo(uint64_t objId, TSK_DB_OBJECT** obj_info) {
 */
 TSK_RETVAL_ENUM
 TskAutoDbJava::addImageInfo(int type, TSK_OFF_T ssize, int64_t & objId, const string & timezone, TSK_OFF_T size, const string &md5,
-    const string& sha1, const string& sha256, const string& deviceId, const string& collectionDetails) {
+    const string& sha1, const string& sha256, const string& deviceId, const string& collectionDetails,
+    char** img_ptrs, int num_imgs) {
 
     const char *tz_cstr = timezone.c_str();
     jstring tzj = m_jniEnv->NewStringUTF(tz_cstr);
@@ -204,8 +205,18 @@ TskAutoDbJava::addImageInfo(int type, TSK_OFF_T ssize, int64_t & objId, const st
     const char *coll_cstr = collectionDetails.c_str();
     jstring collj = m_jniEnv->NewStringUTF(coll_cstr);
 
+    jobjectArray imgNamesj = (jobjectArray)m_jniEnv->NewObjectArray(
+        num_imgs,
+        m_jniEnv->FindClass("java/lang/String"),
+        m_jniEnv->NewStringUTF(""));
+
+    for (int i = 0; i < num_imgs; i++) {
+        m_jniEnv->SetObjectArrayElement(
+            imgNamesj, i, m_jniEnv->NewStringUTF(img_ptrs[i]));
+    }
+
     jlong objIdj = m_jniEnv->CallLongMethod(m_javaDbObj, m_addImageMethodID,
-        type, ssize, tzj, size, md5j, sha1j, sha256j, devIdj, collj);
+        type, ssize, tzj, size, md5j, sha1j, sha256j, devIdj, collj, imgNamesj);
     objId = (int64_t)objIdj;
 
     if (objId < 0) {
@@ -216,27 +227,14 @@ TskAutoDbJava::addImageInfo(int type, TSK_OFF_T ssize, int64_t & objId, const st
     return TSK_OK;
 }
 
-/**
-* Adds one image name
-* @param objId    The object ID of the image
-* @param imgName  The image name
-* @param sequence The sequence number for this image name
-* @returns TSK_ERR on error, TSK_OK on success
-*/
-TSK_RETVAL_ENUM
-TskAutoDbJava::addImageName(int64_t objId, char const* imgName, int sequence) {
+void
+TskAutoDbJava::addAcquisitionDetails(int64_t imgId, const string& collectionDetails) {
 
-    jstring imgNamej = m_jniEnv->NewStringUTF(imgName);
+    const char *coll_cstr = collectionDetails.c_str();
+    jstring collj = m_jniEnv->NewStringUTF(coll_cstr);
 
-    jint res = m_jniEnv->CallIntMethod(m_javaDbObj, m_addImageNameMethodID,
-        objId, imgNamej, (int64_t)sequence);
-
-    if (res == 0) {
-        return TSK_OK;
-    }
-    else {
-        return TSK_ERR;
-    }
+    m_jniEnv->CallLongMethod(m_javaDbObj, m_addAcquisitionDetailsMethodID,
+        imgId, collj);
 }
 
 /**
@@ -906,7 +904,7 @@ TskAutoDbJava::addUnallocFsBlockFilesParent(const int64_t fsObjId, int64_t& objI
 TSK_RETVAL_ENUM
 TskAutoDbJava::addUnallocatedPoolVolume(int vol_index, int64_t parObjId, int64_t& objId)
 {
-    char *desc = "Unallocated Blocks";
+    const char *desc = "Unallocated Blocks";
     jstring descj = m_jniEnv->NewStringUTF(desc);
 
     jlong objIdj = m_jniEnv->CallLongMethod(m_javaDbObj, m_addVolumeMethodID,
@@ -1064,19 +1062,18 @@ TskAutoDbJava::addImageDetails(const char* deviceId)
    }
 #endif
 
+    // If the image has already been added to the database, update the acquisition details and return.
+    if (m_curImgId > 0) {
+        addAcquisitionDetails(m_curImgId, collectionDetails);
+        return 0;
+    }
+
     string devId;
     if (NULL != deviceId) {
         devId = deviceId; 
     } else {
         devId = "";
     }
-    if (TSK_OK != addImageInfo(m_img_info->itype, m_img_info->sector_size,
-          m_curImgId, m_curImgTZone, m_img_info->size, md5, sha1, "", devId, collectionDetails)) {
-        registerError();
-        return 1;
-    }
-
-
 
     char **img_ptrs;
 #ifdef TSK_WIN32
@@ -1110,14 +1107,12 @@ TskAutoDbJava::addImageDetails(const char* deviceId)
     img_ptrs = m_img_info->images;
 #endif
 
-    // Add the image names
-    for (int i = 0; i < m_img_info->num_img; i++) {
-        const char *img_ptr = img_ptrs[i];
 
-        if (TSK_OK != addImageName(m_curImgId, img_ptr, i)) {
-            registerError();
-            return 1;
-        }
+    if (TSK_OK != addImageInfo(m_img_info->itype, m_img_info->sector_size,
+        m_curImgId, m_curImgTZone, m_img_info->size, md5, sha1, "", devId, collectionDetails,
+        img_ptrs, m_img_info->num_img)) {
+        registerError();
+        return 1;
     }
 
 #ifdef TSK_WIN32
@@ -1184,7 +1179,7 @@ TskAutoDbJava::filterPool(const TSK_POOL_INFO * pool_info)
 TSK_RETVAL_ENUM
 TskAutoDbJava::addUnallocatedPoolBlocksToDb(size_t & numPool) {
 
-    for (int i = 0; i < m_poolInfos.size(); i++) {
+    for (size_t i = 0; i < m_poolInfos.size(); i++) {
         const TSK_POOL_INFO * pool_info = m_poolInfos[i];
         if (m_poolOffsetToVsId.find(pool_info->img_offset) == m_poolOffsetToVsId.end()) {
             tsk_error_reset();
@@ -1229,7 +1224,7 @@ TskAutoDbJava::addUnallocatedPoolBlocksToDb(size_t & numPool) {
 
             ranges.push_back(tempRange);
             int64_t fileObjId = 0;
-            if (TSK_ERR == addUnallocBlockFile(unallocVolObjId, NULL, current_run->len * pool_info->block_size, ranges, fileObjId, m_curImgId)) {
+            if (TSK_ERR == addUnallocBlockFile(unallocVolObjId, 0, current_run->len * pool_info->block_size, ranges, fileObjId, m_curImgId)) {
                 registerError();
                 tsk_fs_attr_run_free(unalloc_runs);
                 return TSK_ERR;
@@ -1528,6 +1523,15 @@ void
 TskAutoDbJava::setTz(string tzone)
 {
     m_curImgTZone = tzone;
+}
+
+/**
+ * Set the object ID for the data source
+ */
+void 
+TskAutoDbJava::setDatasourceObjId(int64_t img_id)
+{
+    m_curImgId = img_id;
 }
 
 TSK_RETVAL_ENUM
