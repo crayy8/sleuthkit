@@ -4,7 +4,7 @@ dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.59)
 
-AC_INIT(sleuthkit, 4.9.0)
+AC_INIT(sleuthkit, 4.10.1)
 m4_include([m4/ax_pthread.m4])
 dnl include the version from 1.12.1. This will work for
 m4_include([m4/cppunit.m4])
@@ -429,6 +429,7 @@ AC_CONFIG_FILES([
     man/Makefile
     bindings/java/Makefile
     bindings/java/jni/Makefile
+    case-uco/java/Makefile
     unit_tests/Makefile
     unit_tests/base/Makefile])
 
